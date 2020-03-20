@@ -2180,6 +2180,8 @@ static void add_path_to_appropriate_result_list(struct dir_struct *dir,
  * If 'stop_at_first_file' is specified, `path_excluded` is the most
  * significant path_treatment value that will be returned.
  */
+static int rdr_loops=0;
+static int rdr_calls=0;
 
 static enum path_treatment read_directory_recursive(struct dir_struct *dir,
 	struct index_state *istate, const char *base, int baselen,
@@ -2194,7 +2196,7 @@ static enum path_treatment read_directory_recursive(struct dir_struct *dir,
 	 * commit adding this warning as well as the commit preceding it
 	 * for details.
 	 */
-
+	rdr_calls++;
 	struct cached_dir cdir;
 	enum path_treatment state, subdir_state, dir_state = path_none;
 	struct strbuf path = STRBUF_INIT;
@@ -2207,7 +2209,9 @@ static enum path_treatment read_directory_recursive(struct dir_struct *dir,
 	if (untracked)
 		untracked->check_only = !!check_only;
 
+
 	while (!read_cached_dir(&cdir)) {
+		rdr_loops++;
 		/* check how the file or directory should be treated */
 		state = treat_path(dir, untracked, &cdir, istate, &path,
 				   baselen, pathspec);
@@ -2557,6 +2561,7 @@ static struct untracked_cache_dir *validate_untracked_cache(struct dir_struct *d
 	return root;
 }
 
+char perfBuffer[200];
 int read_directory(struct dir_struct *dir, struct index_state *istate,
 		   const char *path, int len, const struct pathspec *pathspec)
 {
@@ -2569,18 +2574,30 @@ int read_directory(struct dir_struct *dir, struct index_state *istate,
 		return dir->nr;
 	}
 
+	trace_performance_enter();
 	untracked = validate_untracked_cache(dir, len, pathspec);
+	trace_performance_leave("sap: validated untracked cache %.*s", len, path);
 	if (!untracked)
 		/*
 		 * make sure untracked cache code path is disabled,
 		 * e.g. prep_exclude()
 		 */
 		dir->untracked = NULL;
-	if (!len || treat_leading_path(dir, istate, path, len, pathspec))
+	if (!len || treat_leading_path(dir, istate, path, len, pathspec)) {
+		trace_performance_enter();
+		int rdr_loops_start=rdr_loops;
+		int rdr_calls_start=rdr_calls;
 		read_directory_recursive(dir, istate, path, len, untracked, 0, 0, pathspec);
+		sprintf(perfBuffer, "sap: read directory recursive loops:%d,calls:%d %%.*s", rdr_loops-rdr_loops_start, rdr_calls-rdr_calls_start);
+		trace_performance_leave(perfBuffer, len, path);
+	}
+	trace_performance_enter();
 	QSORT(dir->entries, dir->nr, cmp_dir_entry);
+	trace_performance_leave("sap: sorted not-ignored entries %.*s", len, path);
+	trace_performance_enter();
 	QSORT(dir->ignored, dir->ignored_nr, cmp_dir_entry);
-
+	trace_performance_leave("sap: sorted ignored entries %.*s", len, path);
+	
 	/*
 	 * If DIR_SHOW_IGNORED_TOO is set, read_directory_recursive() will
 	 * also pick up untracked contents of untracked dirs; by default
@@ -2590,6 +2607,7 @@ int read_directory(struct dir_struct *dir, struct index_state *istate,
 		     !(dir->flags & DIR_KEEP_UNTRACKED_CONTENTS)) {
 		int i, j;
 
+		trace_performance_enter();
 		/* remove from dir->entries untracked contents of untracked dirs */
 		for (i = j = 0; j < dir->nr; j++) {
 			if (i &&
@@ -2599,6 +2617,7 @@ int read_directory(struct dir_struct *dir, struct index_state *istate,
 				dir->entries[i++] = dir->entries[j];
 			}
 		}
+		trace_performance_leave("sap: looped over entries %.*s", len, path);
 
 		dir->nr = i;
 	}
